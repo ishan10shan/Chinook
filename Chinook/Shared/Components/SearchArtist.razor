@@ -1,0 +1,69 @@
+﻿@typeparam TEntity
+
+<div class="row">
+    <div class="col-12">
+        <input @bind="searchArtist" @onkeyup="SubmitSearch" placeholder="Search Artist" />
+        <button @onclick="OnSearchClicked">Search</button>
+    </div>
+</div>
+
+@if (SearchValue.Length > 0)
+{
+    <div class="row">
+        <div class="col-12">
+            <div class="filter-container">
+                    <p class="artist-filter-text">
+                        Filter applied : @SearchValue
+                        <span class="oi oi-circle-x" aria-hidden="true" @onclick="OnClearFilterClicked"></span>
+                    </p>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    [Parameter]
+    public List<TEntity> ArtistList { get; set; }
+
+    [Parameter]
+    public EventCallback<string> OnSearch { get; set; }
+
+    [Parameter]
+    public EventCallback<string> OnClearFilter { get; set; }
+
+    public string searchArtist { get; set; }
+
+    private string _searchValue;
+    private string SearchValue 
+    { 
+        get
+        {
+            return string.IsNullOrEmpty(_searchValue) ? string.Empty : _searchValue;
+        }
+        set
+        {
+            _searchValue = value;
+        }
+    }
+
+    private async Task OnSearchClicked()
+    {
+        SearchValue = searchArtist;
+        await OnSearch.InvokeAsync(searchArtist);
+    }
+
+    private async Task OnClearFilterClicked()
+    {
+        SearchValue = string.Empty;
+        searchArtist = string.Empty;
+        await OnClearFilter.InvokeAsync();
+    }
+
+    public async void SubmitSearch(KeyboardEventArgs e)
+    {
+        if (e.Code == "Enter" || e.Code == "NumpadEnter")
+        {
+            await OnSearchClicked();
+        }
+    }
+}

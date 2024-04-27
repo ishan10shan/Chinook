@@ -1,0 +1,18 @@
+﻿.filter-container {
+    background-color: #cecece;
+    display: inline-block;
+    padding: 6px;
+    margin-top: 4px;
+    border-radius: 6px;
+    height: 28px;
+}
+
+.artist-filter-text {
+    font-size: 11px;
+    font-weight: bold;
+}
+
+.artist-filter-text span {
+    color: #bb0c0c;
+    padding: 1px 0 0 4px;
+}

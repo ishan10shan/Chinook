@@ -1,0 +1,465 @@
+﻿@page "/artist/{ArtistId:long}"
+@attribute [Authorize]
+
+@using Chinook.Models
+@using Chinook.ClientModels
+@using Microsoft.EntityFrameworkCore
+@using System.Security.Claims;
+
+@if (!string.IsNullOrWhiteSpace(InfoMessage))
+{
+    <div class="alert alert-info fade show">
+        <div class="d-flex align-items-start">
+            <div class="flex-grow-1">
+                @InfoMessage
+            </div>
+            <button type="button" class="btn-close" aria-label="Close" @onclick="CloseInfoMessage"></button>
+        </div>
+    </div>
+}
+
+@if (!string.IsNullOrWhiteSpace(ErrorMessage))
+{
+    <div class="alert alert-danger fade show">
+        <div class="d-flex align-items-start">
+            <div class="flex-grow-1">
+                @ErrorMessage
+            </div>
+            <button type="button" class="btn-close" aria-label="Close" @onclick="CloseErrorMessage"></button>
+        </div>
+    </div>
+}
+
+@if (Artist == null)
+{
+    <Loading />
+}
+else if (Tracks.Count == 0)
+{
+    <p>No songs availble. Please try again later.</p>
+}
+else
+{
+    <h1>@Artist.Name</h1>
+        <table class="table table-striped table-hover table-sm">
+            <thead>
+                <tr>
+                    <th>Album title</th>
+                    <th>Track name</th>
+                    <th></th>
+            </tr>
+            </thead>
+            <tbody>
+            @foreach (var track in Tracks)
+            {
+                <tr>
+                    <td>@track.AlbumTitle</td>
+                    <td>@track.TrackName</td>
+                    <td>
+                        @if (track.IsFavorite)
+                        {
+                            <a href="#" class="m-1" title="Unmark as favorite" @onclick="@(() => UnfavoriteTrack(track.TrackId))" @onclick:preventDefault><i class="bi bi-star-fill"></i></a>
+                        }
+                        else
+                        {
+                            <a href="#" class="m-1" title="Mark as favorite" @onclick="@(() => FavoriteTrack(track.TrackId))" @onclick:preventDefault><i class="bi bi-star"></i></a>
+                        }
+                        <a href="#" class="m-1" title="Add to playlist" @onclick="@(() => OpenPlaylistDialog(track.TrackId))" @onclick:preventDefault><i class="bi bi-file-earmark-plus"></i></a>
+                        @if (track.PlayLists.Count > 0)
+                        {
+                            <a href="#" class="m-1" title="Remove from playlist" @onclick="@(() => OpenRemovePlaylistDialog(track.TrackId))" @onclick:preventDefault><i class="bi bi-file-earmark-minus"></i></a>
+                        }
+                    </td>
+                </tr>
+            }
+            </tbody>
+        </table>
+}
+
+<Modal @ref="PlaylistDialog">
+    <Title>Add to playlist</Title>
+    <Body>
+        @if (SelectedTrack != null)
+        {
+            <div class="form-group mb-2">
+                <label>@Artist.Name - @SelectedTrack.AlbumTitle - @SelectedTrack.TrackName</label>
+            </div>
+        }
+
+        <div class="mb-2">
+            <label for="ExistingPlaylist">Add to existing playlist</label>
+            <select class="form-control" @bind="SelectedPlayList">
+                <option value="0">Select a playlist</option>
+                @foreach (var playListItem in PlayList)
+                {
+                    <option value="@playListItem.PlaylistId">@playListItem.Name</option>
+                }
+            </select>
+        </div>
+        <div class="mb-2">
+            <label for="NewPlaylist">Create new playlist</label>
+            <input type="text" @onkeyup="() => SelectedPlayList = 0" 
+            @bind="NewPlayListName" class="form-control" placeholder="Name for the new playlist">
+        </div>
+    </Body>
+    <Footer>
+        <button class="btn btn-success" @onclick="AddTrackToPlaylist">Save</button>
+    </Footer>
+</Modal>
+
+<Modal @ref="RemovePlaylistDialog">
+    <Title>Remove from playlist</Title>
+    <Body>
+        @if (SelectedRemoveTrack != null)
+        {
+            <div class="form-group mb-2">
+                <label>@Artist.Name - @SelectedRemoveTrack.AlbumTitle - @SelectedRemoveTrack.TrackName</label>
+            </div>
+        }
+
+        <div class="mb-2">
+            <label for="ExistingPlaylist">My playlist</label>
+            <select class="form-control" @bind="SelectedRemovePlayList">
+                <option value="0">Select a playlist</option>
+                @foreach (var playListItem in UserPlayList)
+                {
+                    <option value="@playListItem.PlaylistId">@playListItem.Name</option>
+                }
+            </select>
+        </div>
+    </Body>
+    <Footer>
+        <button class="btn btn-success" @onclick="RemoveUserTrackFromPlaylist">Remove</button>
+    </Footer>
+</Modal>
+
+@code {
+    [Parameter] public long ArtistId { get; set; }
+    [CascadingParameter] private Task<AuthenticationState> authenticationState { get; set; }
+    [Inject] IDbContextFactory<ChinookContext> DbFactory { get; set; }
+    private Modal PlaylistDialog { get; set; }
+    private Modal RemovePlaylistDialog { get; set; }
+
+    private int _SelectedPlayList = 0;
+    private int SelectedPlayList 
+    { 
+        get
+        {
+            return _SelectedPlayList;
+        }
+        set
+        {
+            NewPlayListName = string.Empty;
+            _SelectedPlayList = value;
+        }
+    }
+    private int SelectedRemovePlayList { get; set; }
+
+    private string NewPlayListName;
+
+    private Artist Artist;
+    private List<PlaylistTrack> Tracks;
+    private DbContext DbContext;
+    private PlaylistTrack SelectedTrack;
+    private PlaylistTrack SelectedRemoveTrack;
+    private string InfoMessage;
+    private string CurrentUserId;
+    private string ErrorMessage;
+    private List<Models.Playlist> PlayList;
+    private List<Models.Playlist> UserPlayList;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await InvokeAsync(StateHasChanged);
+        CurrentUserId = await GetUserId();
+        var DbContext = await DbFactory.CreateDbContextAsync();
+
+        Artist = DbContext.Artists.SingleOrDefault(a => a.ArtistId == ArtistId);
+
+        Tracks = DbContext.Tracks.Where(a => a.Album.ArtistId == ArtistId)
+            .Include(a => a.Album)
+            .Select(t => new PlaylistTrack()
+                {
+                    AlbumTitle = (t.Album == null ? "-" : t.Album.Title),
+                    TrackId = t.TrackId,
+                    TrackName = t.Name,
+                    IsFavorite = t.Playlists.Where(p => p.UserPlaylists.Any(up => up.UserId == CurrentUserId && up.Playlist.Name == "My favorite tracks")).Any(),
+                    PlayLists = t.Playlists.Where(p => p.UserPlaylists.Any(up => up.UserId == CurrentUserId && up.Playlist.Name != "My favorite tracks")).ToList()
+                })
+            .ToList();
+
+        PlayList = DbContext.Playlists
+            .Include(x => x.UserPlaylists)
+            .Where(x => x.UserPlaylists.Any(up => up.UserId.Contains(CurrentUserId)))
+            .ToList();
+        UserPlayList = new List<Models.Playlist>();
+
+    }
+
+    private async Task<string> GetUserId()
+    {
+        var user = (await authenticationState).User;
+        var userId = user.FindFirst(u => u.Type.Contains(ClaimTypes.NameIdentifier))?.Value;
+        return userId;
+    }
+
+    private async void FavoriteTrack(long trackId)
+    {
+        await AddTrackToPlayList(trackId, "My favorite tracks");
+    }
+
+    private async void UnfavoriteTrack(long trackId)
+    {
+        await RemoveTrackFromPlaylist(trackId, "My favorite tracks");
+    }
+
+    private async void OpenPlaylistDialog(long trackId)
+    {
+        try
+        {
+            if (PlayList.Count == 0)
+            {
+                var DbContext = await DbFactory.CreateDbContextAsync();
+
+                Models.Playlist favoritePlayList = new Models.Playlist();
+                favoritePlayList.PlaylistId = DbContext.Playlists.Max(e => e.PlaylistId) + 1;
+                favoritePlayList.Name = "My favorite tracks";
+                DbContext.Playlists.Add(favoritePlayList);
+
+                List<UserPlaylist> playList = new List<UserPlaylist>();
+                playList.Add(new UserPlaylist()
+                {
+                    PlaylistId = favoritePlayList.PlaylistId,
+                    UserId = await GetUserId()
+                    });
+                favoritePlayList.UserPlaylists = playList;
+
+                await DbContext.SaveChangesAsync();
+                PlayList.Add(favoritePlayList);
+            }
+        }
+        catch (Exception ex)
+        {
+            ErrorMessage = "Play list open error. Details : " + ex.Message;
+            InfoMessage = string.Empty;
+        }
+        finally
+        {
+            CloseInfoMessage();
+            CloseErrorMessage();
+            SelectedTrack = Tracks.FirstOrDefault(t => t.TrackId == trackId);
+            PlaylistDialog.Open();
+        }
+    }
+
+    private async void AddTrackToPlaylist()
+    {
+        try
+        {
+            string playlistName = string.Empty;
+            if (SelectedPlayList == 0)
+            {
+                if (string.IsNullOrEmpty(NewPlayListName.Trim()))
+                {
+                    throw new InvalidDataException($"Please enter correct playlist name.");
+                }
+
+                var checkPlayList = PlayList.SingleOrDefault(x => x.Name == NewPlayListName.Trim());
+                if (checkPlayList == null)
+                {
+                    playlistName = NewPlayListName.Trim();
+                }
+                else
+                {
+                    throw new InvalidDataException($"Playlist already {NewPlayListName}");
+                }
+            }
+            else
+            {
+                var selectedPlayListInfo = PlayList.Single(x => x.PlaylistId == (long)SelectedPlayList);
+                playlistName = selectedPlayListInfo.Name;
+            }
+
+            await AddTrackToPlayList(SelectedTrack.TrackId, playlistName);
+            InfoMessage = $"Track {Artist.Name} - {SelectedTrack.AlbumTitle} - {SelectedTrack.TrackName} added to playlist {playlistName}.";
+            ErrorMessage = string.Empty;
+        }
+        catch (Exception ex)
+        {
+            ErrorMessage = string.Concat($"Track not added to playlist due to ", ex.Message);
+            InfoMessage = string.Empty;
+        }
+        finally
+        {
+            PlaylistDialog.Close();
+        }
+    }
+
+    private void OpenRemovePlaylistDialog(long trackId)
+    {
+        UserPlayList = Tracks.Single(x => x.TrackId == trackId).PlayLists.ToList();
+        CloseInfoMessage();
+        CloseErrorMessage();
+        SelectedRemoveTrack = Tracks.FirstOrDefault(t => t.TrackId == trackId);
+        RemovePlaylistDialog.Open();
+    }
+
+    private async Task RemoveUserTrackFromPlaylist()
+    {
+        try
+        {
+            if (SelectedRemovePlayList == 0)
+            {
+                ErrorMessage = "Please select a playlist to remove";
+                InfoMessage = string.Empty;
+            }
+            else
+            {
+                await RemoveTrackFromPlaylist(SelectedRemoveTrack.TrackId, UserPlayList.Single(x => x.PlaylistId == SelectedRemovePlayList).Name);
+            }            
+        }
+        catch (Exception ex)
+        {
+            ErrorMessage = string.Concat($"Track cannot remove from playlist due to ", ex.Message);
+            InfoMessage = string.Empty;
+            throw;
+        }
+        finally
+        {
+            RemovePlaylistDialog.Close();
+        }
+    }
+
+    private async Task AddTrackToPlayList(long trackId, string playlistName)
+    {
+        var track = Tracks.FirstOrDefault(t => t.TrackId == trackId);
+
+        if (track != null)
+        {
+            try
+            {
+                var DbContext = await DbFactory.CreateDbContextAsync();
+                var favoriteList = DbContext.Playlists
+                            .Include(t => t.Tracks)
+                            .Include(up => up.UserPlaylists)
+                            .FirstOrDefault(x => x.Name == playlistName);
+
+                if (favoriteList == null)
+                {
+                    Models.Playlist favoritePlayList = new Models.Playlist();
+                    favoritePlayList.PlaylistId = DbContext.Playlists.Max(e => e.PlaylistId) + 1;
+                    favoritePlayList.Name = playlistName;
+
+                    List<Track> favoriteTrack = new List<Track>();
+                    favoriteTrack.Add(DbContext.Tracks.FirstAsync(x => x.TrackId == trackId).Result);
+
+                    List<UserPlaylist> playList = new List<UserPlaylist>();
+                    playList.Add(new UserPlaylist()
+                        {
+                            PlaylistId = favoritePlayList.PlaylistId,
+                            UserId = await GetUserId()
+                        });
+
+                    favoritePlayList.Tracks = favoriteTrack;
+                    favoritePlayList.UserPlaylists = playList;
+                    DbContext.Playlists.Add(favoritePlayList);
+                    PlayList.Add(new Models.Playlist()
+                    {
+                        PlaylistId = favoritePlayList.PlaylistId,
+                        Name = playlistName
+                    });
+                }
+                else
+                {
+                    favoriteList.Tracks.Add(DbContext.Tracks.FirstAsync(x => x.TrackId == trackId).Result);
+                    DbContext.Playlists.Update(favoriteList);
+                }
+
+                await DbContext.SaveChangesAsync();
+
+                if (playlistName.Equals("My favorite tracks"))
+                {
+                    track.IsFavorite = true;
+                }
+                InfoMessage = $"Track {track.ArtistName} - {track.AlbumTitle} - {track.TrackName} added to {playlistName}.";
+                ErrorMessage = string.Empty;
+                SelectedPlayList = 0;
+                NewPlayListName = string.Empty;
+                var userAddedtrack = Tracks.Single(x => x.TrackId == trackId).PlayLists.SingleOrDefault(x => x.Name.Equals(playlistName));
+                if (userAddedtrack == null && !playlistName.Equals("My favorite tracks"))
+                {
+                    Tracks.Single(x => x.TrackId == trackId).PlayLists.Add(new Models.Playlist()
+                    {
+                            Name = playlistName,
+                            PlaylistId = favoriteList.PlaylistId
+                        });
+                }
+            }
+            catch (Exception ex)
+            {
+                ErrorMessage = string.Concat($"Track not added to {playlistName} due to ", ex.Message);
+                InfoMessage = string.Empty;
+            }
+        }
+        else
+        {
+            ErrorMessage = $"Error. Track not added to {playlistName}.";
+            InfoMessage = string.Empty;
+        }
+    }
+
+    private async Task RemoveTrackFromPlaylist(long trackId, string playlistName)
+    {
+        var track = Tracks.FirstOrDefault(t => t.TrackId == trackId);
+
+        if (track != null)
+        {
+            try
+            {
+                var DbContext = await DbFactory.CreateDbContextAsync();
+                var favoriteList = DbContext.Playlists
+                            .Include(t => t.Tracks)
+                            .Include(up => up.UserPlaylists)
+                            .FirstOrDefault(x => x.Name == playlistName);
+
+                if (favoriteList != null)
+                    favoriteList.Tracks.Remove(DbContext.Tracks.FirstAsync(x => x.TrackId == trackId).Result);
+
+
+                await DbContext.SaveChangesAsync();
+
+                InfoMessage = $"Track {track.ArtistName} - {track.AlbumTitle} - {track.TrackName} removed from {playlistName}.";
+                if (playlistName.Equals("My favorite tracks"))
+                {
+                    track.IsFavorite = false;
+                }
+                else
+                {
+                    Tracks.Single(x => x.TrackId == trackId).PlayLists.Remove(UserPlayList.Single(x => x.Name == playlistName));
+                }
+                ErrorMessage = string.Empty;
+                SelectedRemovePlayList = 0;
+            }
+            catch (Exception ex)
+            {
+                ErrorMessage = string.Concat($"Track not removed from {playlistName} due to ", ex.Message);
+                InfoMessage = string.Empty;
+            }
+        }
+        else
+        {
+            ErrorMessage = $"Error. Track not removed from {playlistName}.";
+            InfoMessage = string.Empty;
+        }
+    }
+
+    private void CloseInfoMessage()
+    {
+        InfoMessage = "";
+    }
+
+    private void CloseErrorMessage()
+    {
+        ErrorMessage = "";
+    }
+}
